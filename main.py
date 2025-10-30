@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -7,159 +8,173 @@ from io import BytesIO
 import plotly.express as px
 import matplotlib.pyplot as plt
 
-# ConfiguraciÃ³n de la app
-st.set_page_config(page_title="K-Means con PCA y Comparativa", layout="wide")
-st.title("lustering Interactivo con K-Means y PCA (comparacion Antes/despues)")
-st.title("Carlos Alberto Castro Luna 744849")
-st.write("""
-Sube tus datos, aplica **K-Means**, y observa como el algoritmo agrupa los puntos en un espacio reducido con **PCA (2D o 3D)**.  
-tambien puedes comparar la distribuciones **antes y despues del clustering.
-""")
+# =================== Configuración ===================
+st.set_page_config(page_title="Panel K-Means + PCA", layout="wide")
 
-# --- Subir archivo ---
-uploaded_file = st.file_uploader("Sube un archivo CSV con tus datos", type=["csv"])
+st.title("Panel K-Means + PCA — Comparador")
+st.caption("Sube tus datos, ajusta parámetros y visualiza el efecto del clustering en PCA (2D o 3D).")
 
-if uploaded_file is not None:
-    data = pd.read_csv(uploaded_file)
-    st.success("… Archivo cargado correctamente.")
-    st.write("### Vista previa de los datos:")
-    st.dataframe(data.head())
+# ---------- Carga de datos ----------
+st.sidebar.header("📂 Datos")
+uploaded = st.sidebar.file_uploader("CSV", type=["csv"])
 
-    # Filtrar columnas numÃ©ricas
-    numeric_cols = data.select_dtypes(include=['float64', 'int64']).columns.tolist()
+# ---------- Parámetros (sidebar) ----------
+st.sidebar.header("⚙️ Parámetros del modelo")
 
-    if len(numeric_cols) < 2:
-        st.warning("El archivo debe contener al menos dos columnas numericas.")
-    else:
-        st.sidebar.header("confifuracion del modelo")
+k = st.sidebar.slider("Número de clusters (k)", 1, 10, 3)
+pca_dims = st.sidebar.radio("Dimensiones de PCA", [2, 3], horizontal=True, index=0)
 
-        # Seleccionar columnas a usar
-        selected_cols = st.sidebar.multiselect(
-            "Selecciona las columnas numericas para el clustering:",
-            numeric_cols,
-            default=numeric_cols
+# init con toggle para que puedas alternar exactamente como pedías
+toggle_init = st.sidebar.toggle("Alternar init (k-means++ / random)", value=True)
+init_val = "k-means++" if toggle_init else "random"
+st.sidebar.caption(f"init = **{init_val}**")
+
+n_init_val = st.sidebar.number_input("n_init (reinicios)", min_value=1, max_value=1000, value=10, step=1)
+max_iter_val = st.sidebar.number_input("max_iter (iteraciones máx.)", min_value=1, max_value=5000, value=300, step=10)
+random_state_val = st.sidebar.number_input("random_state", min_value=0, max_value=100000, value=0, step=1)
+
+# =================== Lógica ===================
+if uploaded is None:
+    st.info("Carga un archivo CSV para comenzar.")
+else:
+    df = pd.read_csv(uploaded)
+    num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+
+    if len(num_cols) < 2:
+        st.error("El archivo debe contener al menos dos columnas numéricas.")
+        st.stop()
+
+    # Selección de columnas (sidebar)
+    with st.sidebar.expander("🎛️ Columnas para el clustering", expanded=True):
+        cols = st.multiselect(
+            "Selecciona columnas numéricas",
+            options=num_cols,
+            default=num_cols
         )
+    if len(cols) < 2:
+        st.warning("Selecciona al menos dos columnas.")
+        st.stop()
 
+    X = df[cols].copy().dropna()
 
-        k = st.sidebar.slider("numero de clusters (k):", 1, 10, 3)
-        n_components = st.sidebar.radio("visualizacion de PCA:", [2, 3], index=0)
+    # Ajuste del modelo
+    km = KMeans(
+        n_clusters=k,
+        init=init_val,
+        n_init=int(n_init_val),
+        max_iter=int(max_iter_val),
+        random_state=int(random_state_val)
+    )
+    km.fit(X)
+    df["Cluster"] = km.labels_
 
-        # --- Datos y modelo ---
-        X = data[selected_cols]
+    # PCA
+    pca = PCA(n_components=pca_dims)
+    X_pca = pca.fit_transform(X)
+    pca_names = [f"PCA{i+1}" for i in range(pca_dims)]
+    pca_df = pd.DataFrame(X_pca, columns=pca_names)
+    pca_df["Cluster"] = df.loc[X.index, "Cluster"].astype(str)  # asegurar alineación
 
-        # aqui es en dond se va cambiar el codigo para meter nuevos parametros
-        n = st.number_input(f'ingresa el valor de la varibale n_init: ', value=1, min_value=1)
-        m = st.number_input(f'ingresa el valor de maximas iteraciones: ', value=300,min_value=1)
-        r = st.number_input(f'ingresa el valor de random state: ', value=0,min_value=0)
+    # =================== UI por pestañas ===================
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📊 Exploración", "🟣 Antes / Después", "📍 Centroides", "📈 Elbow", "💾 Descarga"]
+    )
 
-        #metodo para cambiar el init
-        on = st.toggle("Elegir init")
-        if on:
-            st.write("init = k-means++")
-            inn = 'k-means++'
-        else:
-            st.write("init = random")
-            inn = 'random'
+    # -------- Exploración --------
+    with tab1:
+        left, right = st.columns([2, 1])
+        with left:
+            st.subheader("Vista previa")
+            st.dataframe(df.head())
+        with right:
+            st.subheader("Resumen")
+            st.metric("Filas", len(df))
+            st.metric("Columnas numéricas", len(num_cols))
+            st.metric("Inercia (SSE)", f"{km.inertia_:.4f}")
+            st.write("**Parámetros**")
+            st.json({
+                "k": k,
+                "init": init_val,
+                "n_init": int(n_init_val),
+                "max_iter": int(max_iter_val),
+                "random_state": int(random_state_val),
+                "columnas": cols
+            })
 
-        kmeans = KMeans(n_clusters=k,init=inn, max_iter=m, n_init=n, random_state=r)
-        #kmeans = KMeans(n_clusters=k, random_state=42)
-        kmeans.fit(X)
-        data['Cluster'] = kmeans.labels_
-
-        # --- PCA ---
-        pca = PCA(n_components=n_components)
-        X_pca = pca.fit_transform(X)
-        pca_cols = [f'PCA{i+1}' for i in range(n_components)]
-        pca_df = pd.DataFrame(X_pca, columns=pca_cols)
-        pca_df['Cluster'] = data['Cluster']
-
-        # --- VisualizaciÃ³n antes del clustering ---
-        st.subheader("distribucion original (antes de K-Means)")
-        if n_components == 2:
+    # -------- Antes / Después --------
+    with tab2:
+        st.subheader("Distribución original (antes de K-Means)")
+        if pca_dims == 2:
             fig_before = px.scatter(
-                pca_df,
-                x='PCA1',
-                y='PCA2',
+                pca_df, x="PCA1", y="PCA2",
                 title="Datos originales proyectados con PCA (sin agrupar)",
                 color_discrete_sequence=["gray"]
             )
         else:
             fig_before = px.scatter_3d(
-                pca_df,
-                x='PCA1',
-                y='PCA2',
-                z='PCA3',
+                pca_df, x="PCA1", y="PCA2", z="PCA3",
                 title="Datos originales proyectados con PCA (sin agrupar)",
                 color_discrete_sequence=["gray"]
             )
         st.plotly_chart(fig_before, use_container_width=True)
 
-        # --- VisualizaciÃ³n despuÃ©s del clustering ---
         st.subheader(f"Datos agrupados con K-Means (k = {k})")
-        if n_components == 2:
+        if pca_dims == 2:
             fig_after = px.scatter(
-                pca_df,
-                x='PCA1',
-                y='PCA2',
-                color=pca_df['Cluster'].astype(str),
+                pca_df, x="PCA1", y="PCA2",
+                color="Cluster",
                 title="Clusters visualizados en 2D con PCA",
                 color_discrete_sequence=px.colors.qualitative.Vivid
             )
         else:
             fig_after = px.scatter_3d(
-                pca_df,
-                x='PCA1',
-                y='PCA2',
-                z='PCA3',
-                color=pca_df['Cluster'].astype(str),
+                pca_df, x="PCA1", y="PCA2", z="PCA3",
+                color="Cluster",
                 title="Clusters visualizados en 3D con PCA",
                 color_discrete_sequence=px.colors.qualitative.Vivid
             )
         st.plotly_chart(fig_after, use_container_width=True)
 
-        # --- Centroides ---
-        st.subheader("Centroides de los clusters (en espacio PCA)")
-        centroides_pca = pd.DataFrame(pca.transform(kmeans.cluster_centers_), columns=pca_cols)
-        st.dataframe(centroides_pca)
+    # -------- Centroides (en PCA) --------
+    with tab3:
+        st.subheader("Centroides de los clusters (proyectados en PCA)")
+        cent_pca = pd.DataFrame(pca.transform(km.cluster_centers_), columns=pca_names)
+        st.dataframe(cent_pca, use_container_width=True)
 
-        # --- MÃ©todo del Codo ---
-        st.subheader("metodo del Codo (Elbow Method)")
-        if st.button("Calcular numero optimo de clusters"):
+    # -------- Método del Codo --------
+    with tab4:
+        st.subheader("Método del Codo (Elbow)")
+        if st.button("Calcular número óptimo de clusters", key="elbow"):
             inertias = []
-            K = range(1, 11)
-            for i in K:
-                km = KMeans(n_clusters=i, random_state=42)
-                km.fit(X)
-                inertias.append(km.inertia_)
+            Ks = range(1, 11)
+            for kk in Ks:
+                km_tmp = KMeans(
+                    n_clusters=kk,
+                    init=init_val,
+                    n_init=int(n_init_val),
+                    max_iter=int(max_iter_val),
+                    random_state=int(random_state_val)
+                )
+                km_tmp.fit(X)
+                inertias.append(km_tmp.inertia_)
 
-            fig2, ax2 = plt.subplots(figsize=(8, 6))
-            plt.plot(K, inertias, 'bo-')
-            plt.title('metodo del Codo')
-            plt.xlabel('numero de Clusters (k)')
-            plt.ylabel('Inercia (SSE)')
-            plt.grid(True)
-            st.pyplot(fig2)
+            fig_elbow, ax = plt.subplots(figsize=(8, 5), dpi=110)
+            ax.plot(list(Ks), inertias, "o-")
+            ax.set_xlabel("Número de Clusters (k)")
+            ax.set_ylabel("Inercia (SSE)")
+            ax.set_title("Elbow Method")
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig_elbow)
 
-        # --- Descarga de resultados ---
+    # -------- Descarga --------
+    with tab5:
         st.subheader("Descargar datos con clusters asignados")
-        buffer = BytesIO()
-        data.to_csv(buffer, index=False)
-        buffer.seek(0)
+        buf = BytesIO()
+        df.to_csv(buf, index=False)
+        buf.seek(0)
         st.download_button(
-            label="Descargar CSV con Clusters",
-            data=buffer,
+            label="⬇️ Descargar CSV con Clusters",
+            data=buf,
             file_name="datos_clusterizados.csv",
             mime="text/csv"
         )
-
-else:
-    st.info("Carga un archivo CSV en la barra lateral para comenzar.")
-    st.write("""
-    **Ejemplo de formato:**
-    | Ingreso_Anual | Gasto_Tienda | Edad |
-    |----------------|--------------|------|
-    | 45000 | 350 | 28 |
-    | 72000 | 680 | 35 |
-    | 28000 | 210 | 22 |
-    """)
-

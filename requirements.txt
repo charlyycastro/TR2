@@ -1,4 +1,7 @@
-pandas
 streamlit
-matplotlib==3.10.7
+pandas
+numpy
+altair
 scikit-learn
+matplotlib
+plotly
